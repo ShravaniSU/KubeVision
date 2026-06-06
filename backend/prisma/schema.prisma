@@ -1,0 +1,98 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Cluster {
+  id              String            @id @default(cuid())
+  name            String
+  environment     String
+  region          String
+  status          String
+  nodes           Node[]
+  deployments     Deployment[]
+  metricSnapshots MetricSnapshot[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+}
+
+model Node {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  cluster     Cluster   @relation(fields: [clusterId], references: [id])
+  clusterId   String
+  cpuUsage    Float
+  memoryUsage Float
+  diskUsage   Float
+  status      String
+  pods        Pod[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Deployment {
+  id               String     @id @default(cuid())
+  name             String
+  cluster          Cluster    @relation(fields: [clusterId], references: [id])
+  clusterId        String
+  image            String
+  version          String
+  replicas         Int
+  availableReplicas Int
+  status           String
+  pods             Pod[]
+  releases         Release[]
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+}
+
+model Pod {
+  id           String     @id @default(cuid())
+  name         String     @unique
+  deployment   Deployment @relation(fields: [deploymentId], references: [id])
+  deploymentId String
+  node         Node       @relation(fields: [nodeId], references: [id])
+  nodeId       String
+  status       String
+  startedAt    DateTime
+  restartedAt  DateTime?
+  logs         Log[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model Log {
+  id        String   @id @default(cuid())
+  pod       Pod      @relation(fields: [podId], references: [id])
+  podId     String
+  level     String
+  message   String
+  timestamp DateTime @default(now())
+}
+
+model Release {
+  id           String   @id @default(cuid())
+  deployment   Deployment @relation(fields: [deploymentId], references: [id])
+  deploymentId String
+  version      String
+  color        String
+  status       String
+  notes        String?
+  deployedAt   DateTime
+}
+
+model MetricSnapshot {
+  id         String   @id @default(cuid())
+  cluster    Cluster  @relation(fields: [clusterId], references: [id])
+  clusterId  String
+  cpuUsage   Float
+  memoryUsage Float
+  podCount   Int
+  failedPods Int
+  capturedAt DateTime
+}

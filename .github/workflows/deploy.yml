@@ -1,0 +1,114 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Build, Migrate & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── CI checks ──────────────────────────────────────────────────────────
+      - name: Backend — type-check & build
+        working-directory: backend
+        run: |
+          npm install
+          npx prisma generate
+          npx tsc --noEmit
+          npm run build
+
+      - name: Frontend — type-check & build
+        working-directory: frontend
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run build
+        env:
+          VITE_API_BASE_URL: /api
+
+      # ── Docker build ───────────────────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend Docker image
+        run: |
+          docker build \
+            --target production \
+            -t kubevision-backend:${{ github.sha }} \
+            -t kubevision-backend:latest \
+            ./backend
+
+      - name: Build frontend Docker image
+        run: |
+          docker build \
+            --target production \
+            --build-arg VITE_API_BASE_URL=/api \
+            -t kubevision-frontend:${{ github.sha }} \
+            -t kubevision-frontend:latest \
+            ./frontend
+
+      # ── Deploy ─────────────────────────────────────────────────────────────
+      - name: Deploy with Docker Compose (production)
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_USER: ${{ secrets.DB_USER || 'kubevision' }}
+          DB_NAME: ${{ secrets.DB_NAME || 'kubevision' }}
+          CORS_ORIGIN: ${{ secrets.CORS_ORIGIN || 'http://localhost' }}
+        run: |
+          docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+
+      # ── Migrations ─────────────────────────────────────────────────────────
+      - name: Wait for database to be ready
+        run: |
+          echo "Waiting for database..."
+          sleep 15
+
+      - name: Run Prisma migrations
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          docker compose -f docker-compose.prod.yml exec -T backend \
+            npx prisma migrate deploy
+
+      # ── Health check ───────────────────────────────────────────────────────
+      - name: Health check
+        run: |
+          echo "Waiting for services to be ready..."
+          sleep 10
+          for i in {1..5}; do
+            if curl --silent --fail http://localhost/api/health; then
+              echo ""
+              echo "✅ Deployment successful — /api/health returned 200"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 5s..."
+            sleep 5
+          done
+          echo "❌ Health check failed after 5 attempts"
+          docker compose -f docker-compose.prod.yml logs
+          exit 1
+
+      # ── Notify ─────────────────────────────────────────────────────────────
+      - name: Report success
+        if: success()
+        run: |
+          echo "🚀 KubeVision deployed successfully"
+          echo "   Commit: ${{ github.sha }}"
+          echo "   Branch: ${{ github.ref_name }}"
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed — check workflow logs"
+          docker compose -f docker-compose.prod.yml ps
+          docker compose -f docker-compose.prod.yml logs --tail=50
